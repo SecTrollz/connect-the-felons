@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0D1117"
+    android:padding="16dp">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginBottom="12dp">
+
+        <ImageView
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:src="@mipmap/ic_launcher"
+            android:layout_marginEnd="10dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Connect the Felons"
+                android:textColor="#E6EDF3"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/statusLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Ready"
+                android:textColor="#58A6FF"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:indeterminateTint="#238636" />
+
+    </LinearLayout>
+
+    <!-- Input row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginBottom="8dp">
+
+        <EditText
+            android:id="@+id/queryInput"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:hint="domain · email · IP · IMEI · phone · company"
+            android:textColorHint="#484F58"
+            android:textColor="#E6EDF3"
+            android:background="@drawable/input_bg"
+            android:padding="10dp"
+            android:inputType="textNoSuggestions"
+            android:imeOptions="actionDone"
+            android:singleLine="true"
+            android:fontFamily="monospace"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/runButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RUN"
+            android:backgroundTint="#238636"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp" />
+
+    </LinearLayout>
+
+    <!-- Output scroll area -->
+    <ScrollView
+        android:id="@+id/scrollView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#161B22"
+        android:padding="10dp">
+
+        <TextView
+            android:id="@+id/outputView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enter a target above and tap RUN."
+            android:textColor="#8B949E"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:textIsSelectable="true"
+            android:lineSpacingExtra="2dp" />
+
+    </ScrollView>
+
+    <!-- Copy button -->
+    <Button
+        android:id="@+id/copyButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="Copy Results"
+        android:backgroundTint="#21262D"
+        android:textColor="#58A6FF"
+        android:visibility="gone" />
+
+</LinearLayout>

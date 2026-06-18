@@ -1,0 +1,13 @@
+.gradle/
+build/
+*.apk
+*.aab
+local.properties
+.idea/
+*.iml
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+investigations/
+*.json
