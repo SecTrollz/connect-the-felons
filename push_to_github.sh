@@ -94,7 +94,7 @@ HTTP=$(curl -s -o "$TMPJSON" -w "%{http_code}" \
     -H "Authorization: token ${GITHUB_TOKEN}" \
     -H "Accept: application/vnd.github.v3+json" \
     "https://api.github.com/user/repos" \
-    -d "{\"name\":\"${REPO_NAME}\",\"private\":true,\"description\":\"Connect the Felons OSINT forensic platform\"}" 2>&1)
+    -d "{\"name\":\"${REPO_NAME}\",\"private\":false,\"description\":\"Connect the Felons OSINT forensic platform\"}" 2>&1)
 CURL_EXIT=$?
 
 if [ "$CURL_EXIT" != "0" ]; then
