@@ -9,16 +9,22 @@ using only direct queries and locally stored databases.
 No third party APIs. No rate limits. No subscriptions.
 
 Data sources (all direct queries):
-  - DNS resolution:    system dig/nslookup
+  - DNS resolution:    dnspython (falls back to the system socket resolver)
   - IP geolocation:   MaxMind GeoLite2 (local database)
-  - ASN lookup:       ARIN/RIPE/APNIC/AFRINIC/LACNIC (direct WHOIS protocol)
-  - Reverse DNS:      system dig -x
+  - ASN lookup:       ARIN/RIPE/APNIC/AFRINIC/LACNIC (direct WHOIS protocol,
+                      raw TCP:43 socket query - no `whois` binary needed)
+  - Reverse DNS:      dnspython PTR lookup (falls back to socket)
   - Historical IPs:   CIRCL passive DNS (direct API, free account)
   - Certificates:     crt.sh (direct API, no key needed)
   - Related domains:  reverse DNS + certificate SAN extraction
+
+NOTE: this module originally shelled out to the `dig` and `whois` CLI
+tools. Those don't exist on Android (Chaquopy runs Python in-process in
+the app sandbox - there's no system `dig`/`whois` to exec), so every
+lookup here now goes through dnspython or a direct socket instead. No
+external process is spawned.
 """
 
-import subprocess
 import json
 import re
 import socket
@@ -29,6 +35,13 @@ from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
+
+try:
+    import dns.resolver
+    import dns.reversename
+    DNS_AVAILABLE = True
+except ImportError:
+    DNS_AVAILABLE = False
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from evidence_journal import EvidenceJournal
@@ -126,43 +139,44 @@ def pick_rir(ip):
 def resolve_domain(domain):
     """
     Resolve domain to IPv4 and IPv6 addresses.
-    Uses system DNS resolver directly.
+    Uses dnspython directly against the configured resolver, falling back
+    to the system resolver via socket.getaddrinfo if dnspython isn't
+    available or the query fails outright (not just "no records").
     Returns dict with all resolved addresses.
     """
     result = {"domain": domain, "ipv4": [], "ipv6": [], "error": None}
 
-    # IPv4 (A records)
-    try:
-        proc = subprocess.run(
-            ["dig", "+short", "+time=5", "+tries=2", "A", domain],
-            capture_output=True, text=True, timeout=10
-        )
-        if proc.returncode == 0:
-            for line in proc.stdout.strip().split("\n"):
-                line = line.strip()
-                if line and re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", line):
-                    result["ipv4"].append(line)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Fall back to socket if dig not available
+    if DNS_AVAILABLE:
         try:
-            infos = socket.getaddrinfo(domain, None, socket.AF_INET)
-            result["ipv4"] = list(set(i[4][0] for i in infos))
-        except socket.gaierror as e:
+            answers = dns.resolver.resolve(domain, "A", lifetime=10)
+            result["ipv4"] = [str(r) for r in answers]
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            pass
+        except Exception as e:
             result["error"] = str(e)
 
-    # IPv6 (AAAA records)
-    try:
-        proc = subprocess.run(
-            ["dig", "+short", "+time=5", "+tries=2", "AAAA", domain],
-            capture_output=True, text=True, timeout=10
-        )
-        if proc.returncode == 0:
-            for line in proc.stdout.strip().split("\n"):
-                line = line.strip()
-                if line and ":" in line and not line.startswith(";"):
-                    result["ipv6"].append(line)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+        try:
+            answers = dns.resolver.resolve(domain, "AAAA", lifetime=10)
+            result["ipv6"] = [str(r) for r in answers]
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            pass
+        except Exception:
+            pass  # IPv6 is best-effort; don't let it clobber a real IPv4 error
+
+    if not result["ipv4"] and not result["ipv6"]:
+        try:
+            infos = socket.getaddrinfo(domain, None)
+            for info in infos:
+                family, addr = info[0], info[4][0]
+                if family == socket.AF_INET and addr not in result["ipv4"]:
+                    result["ipv4"].append(addr)
+                elif family == socket.AF_INET6 and addr not in result["ipv6"]:
+                    result["ipv6"].append(addr)
+            if result["ipv4"] or result["ipv6"]:
+                result["error"] = None
+        except socket.gaierror as e:
+            if not result["ipv4"] and not result["ipv6"]:
+                result["error"] = str(e)
 
     return result
 
@@ -170,27 +184,26 @@ def resolve_domain(domain):
 def reverse_dns(ip):
     """
     Reverse DNS lookup: IP → hostnames.
-    Direct system query.
+    Uses dnspython's PTR lookup, falling back to socket.gethostbyaddr.
     """
     result = {"ip": ip, "hostnames": [], "error": None}
 
-    try:
-        proc = subprocess.run(
-            ["dig", "+short", "+time=5", "+tries=2", "-x", ip],
-            capture_output=True, text=True, timeout=10
-        )
-        if proc.returncode == 0:
-            for line in proc.stdout.strip().split("\n"):
-                line = line.strip().rstrip(".")
-                if line and not line.startswith(";"):
-                    result["hostnames"].append(line)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Fall back to socket
+    if DNS_AVAILABLE:
         try:
-            hostname = socket.gethostbyaddr(ip)[0]
-            result["hostnames"] = [hostname]
-        except socket.herror as e:
-            result["error"] = str(e)
+            rev_name = dns.reversename.from_address(ip)
+            answers = dns.resolver.resolve(rev_name, "PTR", lifetime=10)
+            result["hostnames"] = [str(r).rstrip(".") for r in answers]
+            return result
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            return result  # confirmed no PTR record - not an error
+        except Exception:
+            pass  # fall through to socket
+
+    try:
+        hostname = socket.gethostbyaddr(ip)[0]
+        result["hostnames"] = [hostname]
+    except (socket.herror, OSError) as e:
+        result["error"] = str(e)
 
     return result
 
@@ -237,26 +250,30 @@ def geolocate_ip(ip):
         except Exception:
             pass  # Fall through to API
 
-    # Fallback: ip-api.com (free, direct query, no key)
+    # Fallback: ipwho.is (free, HTTPS, no key). ip-api.com was used here
+    # before, but its free tier is HTTP-only, which android:usesCleartextTraffic
+    # ="false" in the Android build blocks outright - every fallback lookup
+    # failed silently. ipwho.is serves the same kind of data over HTTPS.
     try:
-        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,lat,lon,isp,org,as,hosting"
+        url = f"https://ipwho.is/{ip}"
         req = Request(url, headers={"User-Agent": "CTF-Forensics/1.0"})
         with urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
 
-        if data.get("status") == "success":
+        if data.get("success", True):
+            conn = data.get("connection") or {}
+            asn = conn.get("asn")
             result.update({
                 "city":         data.get("city"),
-                "region":       data.get("regionName"),
+                "region":       data.get("region"),
                 "country":      data.get("country"),
-                "country_code": data.get("countryCode"),
-                "latitude":     data.get("lat"),
-                "longitude":    data.get("lon"),
-                "isp":          data.get("isp"),
-                "org":          data.get("org"),
-                "asn":          data.get("as"),
-                "type":         "datacenter" if data.get("hosting") else "residential",
-                "source":       "ip-api.com (direct API)",
+                "country_code": data.get("country_code"),
+                "latitude":     data.get("latitude"),
+                "longitude":    data.get("longitude"),
+                "isp":          conn.get("isp"),
+                "org":          conn.get("org"),
+                "asn":          f"AS{asn}" if asn else None,
+                "source":       "ipwho.is (direct API)",
             })
         else:
             result["error"] = data.get("message", "API error")
@@ -267,11 +284,30 @@ def geolocate_ip(ip):
     return result
 
 
+def _raw_whois_query(server, query, timeout=15):
+    """
+    Speak the WHOIS protocol (RFC 3912) directly over a TCP socket:
+    connect to port 43, send the query line, read until the server
+    closes the connection. This is literally all the `whois` CLI does
+    under the hood - doing it with a socket means no external binary is
+    required, which matters on Android where there's no `whois` to exec.
+    """
+    with socket.create_connection((server, 43), timeout=timeout) as sock:
+        sock.sendall((query + "\r\n").encode("utf-8", errors="replace"))
+        chunks = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
 def asn_lookup(ip):
     """
     Look up ASN information for an IP address.
     Direct WHOIS protocol query to the appropriate Regional Internet Registry.
-    No API key. No third party.
+    No API key. No third party. No external `whois` binary required.
     """
     result = {
         "ip": ip,
@@ -288,11 +324,7 @@ def asn_lookup(ip):
     result["rir"] = rir
 
     try:
-        proc = subprocess.run(
-            ["whois", "-h", whois_server, ip],
-            capture_output=True, text=True, timeout=15
-        )
-        output = proc.stdout
+        output = _raw_whois_query(whois_server, ip, timeout=15)
 
         # Parse ASN
         for line in output.split("\n"):
@@ -314,7 +346,7 @@ def asn_lookup(ip):
                 if value and not result["country"]:
                     result["country"] = value
 
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+    except (socket.timeout, OSError) as e:
         result["error"] = str(e)
 
     return result

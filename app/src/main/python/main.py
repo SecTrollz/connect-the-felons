@@ -35,7 +35,11 @@ from modules.m0_input_router import InputRouter
 from modules.m1_infrastructure import InfrastructureFingerprinter
 from modules.m2_dns_email import EmailDNSForensics
 from modules.m3_ownership import OwnershipTraverser
+from modules.m4_reverse_infra import ReverseInfrastructureMapper
 from modules.m5_device import DeviceIdentityForensics
+from modules.m6_graph import AssociationGraph
+from modules.m7_reconciliation import Reconciliation
+from modules.m8_attribution import AttributionEngine
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -61,24 +65,51 @@ class Investigation:
     Every module shares the same evidence journal.
     """
 
-    def __init__(self, investigation_id=None):
-        self.journal   = EvidenceJournal(investigation_id=investigation_id)
+    def __init__(self, investigation_id=None, base_dir=None,
+                 github_token=None, hibp_key=None):
+        """
+        base_dir: writable root for the evidence chain files. Defaults to
+        the cwd-relative "investigations/evidence_chains" (fine on
+        Termux/desktop). Android has no writable cwd, so ctf_bridge.py
+        passes the app's context.filesDir here instead.
+
+        github_token / hibp_key: optional credentials for Module 4's
+        GitHub commit search and HaveIBeenPwned breach lookups. Both
+        modules work without them (GitHub falls back to the unauthenticated
+        60 req/hr limit; HIBP reports it needs a key rather than failing).
+        """
+        self.journal   = EvidenceJournal(investigation_id=investigation_id, base_dir=base_dir)
         self.router    = InputRouter(journal=self.journal)
         self.infra     = InfrastructureFingerprinter(journal=self.journal)
         self.dns_email = EmailDNSForensics(journal=self.journal)
         self.ownership = OwnershipTraverser(journal=self.journal)
         self.device    = DeviceIdentityForensics(journal=self.journal)
+        self.reverse_infra = ReverseInfrastructureMapper(
+            journal=self.journal, github_token=github_token, hibp_key=hibp_key
+        )
+        self.reconciliation = Reconciliation(journal=self.journal)
+        self.attribution     = AttributionEngine(journal=self.journal)
+        try:
+            self.graph = AssociationGraph(journal=self.journal)
+        except ImportError:
+            self.graph = None
         self.results   = {}
 
         print(f"\n[CTF] Investigation: {self.journal.investigation_id}")
         print(f"[CTF] Evidence chain: {self.journal.chain_file}")
 
-    def run(self, targets):
+    def run(self, targets, self_identifiers=None):
         """
         Run full investigation on a list of target strings.
-        
+
         Detects each target type, routes to the correct modules,
         collects results, and prints a final summary.
+
+        self_identifiers: optional list of identifiers the investigator
+        has confirmed are their own (own email, phone, IMEI, etc). Used
+        by Module 8 to separate self-owned artifacts from subject-owned
+        ones. Safe to omit - Module 8 just won't have a SELF_OWNED bucket
+        to sort into.
         """
         if isinstance(targets, str):
             targets = [targets]
@@ -127,6 +158,12 @@ class Investigation:
 
             else:
                 print(f"\n[CTF] No handler for input type: {input_type}")
+
+        # Modules 6/7/8 operate on everything the run above collected -
+        # no new queries, pure analysis of self.results.
+        self._build_association_graph()
+        self._run_reconciliation()
+        self._run_attribution(self_identifiers or [])
 
         # Final summary
         self._print_summary()
@@ -180,6 +217,15 @@ class Investigation:
             print(f"\n[CTF] Registrant found: {registrant} → tracing ownership chain")
             chain = self.ownership.trace(registrant)
             self.results[f"ownership:{registrant}"] = chain
+
+        # Module 4: extend attribution on the registrant email WHOIS just
+        # surfaced - this is exactly the "identifier already surfaced
+        # during an investigation" use case M4 was built for.
+        registrant_email = email_dns.get("whois", {}).get("registrant_email")
+        if registrant_email:
+            print(f"\n[CTF] Registrant email found: {registrant_email} → reverse infrastructure mapping")
+            reverse = self.reverse_infra.map_email(registrant_email)
+            self.results[f"reverse_infra:{registrant_email}"] = reverse
 
     def _run_ip(self, ip):
         """IP address: infrastructure fingerprint only"""
@@ -257,6 +303,139 @@ class Investigation:
         """Company/person name: ownership chain traversal"""
         result = self.ownership.trace(name)
         self.results[f"ownership:{name}"] = result
+
+    # ─────────────────────────────────────────────────────────────────
+    # MODULES 6/7/8 - CROSS-CUTTING ANALYSIS
+    # ─────────────────────────────────────────────────────────────────
+    # These run once at the end of run(), after every target has been
+    # processed. They don't issue new queries - they organize and score
+    # what the module runners above already found and logged.
+
+    def _build_association_graph(self):
+        """Module 6: build the entity graph from everything collected."""
+        if not self.graph:
+            print(f"\n[CTF] Association graph skipped: networkx not installed")
+            return
+        summary = self.graph.from_investigation_results(self.results)
+        self.results["_graph_summary"] = summary
+        print(f"\n[CTF/M6] Association graph: {summary['total_nodes']} nodes, "
+              f"{summary['total_edges']} edges, {summary['clusters']} cluster(s)")
+
+    def _run_reconciliation(self):
+        """
+        Module 7: check whether the geography, timeline, identity count,
+        and infrastructure mix found above actually hold together.
+
+        Every input here traces back to a field a module already put in
+        self.results - nothing is guessed to make the check run.
+        """
+        locations, events, identities, infra_types = [], [], [], []
+
+        for key, result in self.results.items():
+            if not isinstance(result, dict):
+                continue
+
+            # Geography: IP geolocations found by M1
+            for ip, ip_data in result.get("ips", {}).items():
+                geo = ip_data.get("geolocation", {})
+                if geo.get("latitude") is not None and geo.get("longitude") is not None:
+                    locations.append({
+                        "label": f"ip_geolocation:{ip}",
+                        "lat": geo["latitude"],
+                        "lon": geo["longitude"],
+                    })
+
+            # Timeline: domain registration date + earliest certificate, from M2
+            whois = result.get("whois", {})
+            if whois.get("created"):
+                events.append({"label": f"registered:{result.get('domain')}", "timestamp": whois["created"]})
+            certs = result.get("certificates", {})
+            if certs.get("earliest_cert"):
+                events.append({"label": f"certificate_issued:{result.get('domain')}", "timestamp": certs["earliest_cert"]})
+
+            # Identity: registrant name from M2, natural persons from M3
+            if whois.get("registrant_name"):
+                identities.append(whois["registrant_name"])
+            for person in result.get("natural_persons", []):
+                identities.append(person["name"])
+
+            # Infrastructure mix, from M1
+            for ip, ip_data in result.get("ips", {}).items():
+                if ip_data.get("infrastructure_type"):
+                    infra_types.append(ip_data["infrastructure_type"])
+
+        recon = self.reconciliation.reconcile(
+            locations=locations, events=events,
+            identities=identities, infra_types=infra_types,
+        )
+        self.results["_reconciliation"] = recon
+
+    def _run_attribution(self, self_identifiers):
+        """
+        Module 8: separate self-owned from subject-owned artifacts and
+        score relationship hypotheses.
+
+        subject_identifiers and observed_signals are both derived from
+        findings already sitting in self.results - each signal below is
+        only included if the module that would confirm it actually
+        returned a hit.
+        """
+        subject_identifiers = set()
+        signals = set()
+        natural_person_count = 0
+
+        for key, result in self.results.items():
+            if not isinstance(result, dict):
+                continue
+
+            domain = result.get("domain")
+            if domain:
+                subject_identifiers.add(domain)
+                if domain.endswith(".gov") or domain.endswith(".mil"):
+                    signals.add("government_tld")
+
+            for ip in result.get("ips", {}):
+                subject_identifiers.add(ip)
+
+            whois = result.get("whois", {})
+            if whois.get("registrant_email"):
+                subject_identifiers.add(whois["registrant_email"])
+
+            auth = result.get("email_auth", {})
+            if auth.get("score", 0) >= 50:
+                signals.add("compliance_posture_present")
+
+            # Ownership chain findings (M3)
+            if "chain" in result and "query" in result:
+                chain = result["chain"]
+                if chain.get("entity_type") in ("PRIVATE_COMPANY", "PUBLIC_COMPANY"):
+                    signals.add("registered_corporation")
+                if chain.get("entity_type") == "NATURAL_PERSON" and chain.get("depth", 0) == 0:
+                    signals.add("no_corporate_structure")
+                if result.get("depth_reached", 0) > 2:
+                    signals.add("shell_company_chain_depth_gt_2")
+                if result.get("ofac_flags"):
+                    signals.add("ofac_match")
+                if result.get("offshore_flags"):
+                    signals.add("offshore_leak_match")
+                for person in result.get("natural_persons", []):
+                    subject_identifiers.add(person["name"])
+                    natural_person_count += 1
+
+        if natural_person_count == 1:
+            signals.add("single_named_individual")
+
+        recon = self.results.get("_reconciliation", {})
+        if recon.get("identity", {}).get("classification") == "ANOMALOUS":
+            signals.add("identity_fragmentation_high")
+
+        attribution = self.attribution.differentiate(
+            artifacts=list(subject_identifiers),
+            self_identifiers=self_identifiers,
+            subject_identifiers=list(subject_identifiers),
+            observed_signals=list(signals),
+        )
+        self.results["_attribution"] = attribution
 
     # ─────────────────────────────────────────────────────────────────
     # SUMMARY

@@ -47,7 +47,18 @@
             android:id="@+id/progressBar"
             android:layout_width="24dp"
             android:layout_height="24dp"
+            android:layout_marginEnd="4dp"
             android:indeterminateTint="#238636" />
+
+        <ImageButton
+            android:id="@+id/settingsButton"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_manage"
+            android:tint="#8B949E"
+            android:contentDescription="Settings"
+            android:padding="4dp" />
 
     </LinearLayout>
 
