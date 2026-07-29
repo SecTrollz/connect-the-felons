@@ -18,10 +18,19 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 
-def run_investigation(target: str) -> str:
+def run_investigation(target: str, storage_dir: str = None,
+                       github_token: str = None, hibp_key: str = None) -> str:
     """
     Called from MainActivity.kt:
-        py.getModule("ctf_bridge").callAttr("run_investigation", query)
+        py.getModule("ctf_bridge").callAttr(
+            "run_investigation", query, filesDir.absolutePath, ghToken, hibpKey)
+
+    storage_dir should be the app's writable private storage
+    (context.filesDir.absolutePath on Android). Chaquopy's process cwd is
+    not writable, so without this every EvidenceJournal write fails and
+    the investigation dies before it produces anything. On desktop/Termux
+    this can be left None and the journal falls back to a cwd-relative
+    default.
 
     Captures all print() output (the narration from each module),
     runs the investigation, and returns a single JSON string with:
@@ -30,18 +39,39 @@ def run_investigation(target: str) -> str:
       - "error": only present if something threw
     """
     from main import Investigation
+    from report_engine import ReportEngine
+
+    base_dir = None
+    reports_dir = None
+    if storage_dir:
+        base_dir = os.path.join(storage_dir, "investigations", "evidence_chains")
+        reports_dir = os.path.join(storage_dir, "investigations", "reports")
 
     buf = _io.StringIO()
     original_stdout = sys.stdout
     sys.stdout = buf
 
     try:
-        inv = Investigation()
+        inv = Investigation(base_dir=base_dir, github_token=github_token, hibp_key=hibp_key)
         results = inv.run([target])
+
+        # Module 9 (report engine): turn what was just found into the
+        # law-enforcement handoff and court-admissible report. Both are
+        # generated every run rather than gated behind a separate call -
+        # simplest way to make them reachable from the one RUN button.
+        engine = ReportEngine(inv.journal, output_dir=reports_dir)
+        le_report = engine.le_handoff(findings_summary={
+            "key_findings": inv._collect_findings(),
+            "red_flags": inv._collect_flags(),
+        })
+        court_report = engine.court_report()
+
         log = buf.getvalue()
         return json.dumps({
             "log": log,
             "results": results,
+            "le_report": le_report,
+            "court_report": court_report,
         }, indent=2, default=str)
     except Exception as exc:
         log = buf.getvalue()

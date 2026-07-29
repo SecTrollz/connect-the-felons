@@ -134,7 +134,7 @@ def whois_history(domain):
 
     try:
         url = (
-            f"http://web.archive.org/cdx/search/cdx"
+            f"https://web.archive.org/cdx/search/cdx"
             f"?url=whois.{domain}&output=json&limit=20&fl=timestamp,statuscode"
             f"&filter=statuscode:200&collapse=timestamp:6"
         )

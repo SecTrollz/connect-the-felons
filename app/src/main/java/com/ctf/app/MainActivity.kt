@@ -4,10 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
+import android.text.InputType
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.*
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -20,6 +22,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var queryInput: EditText
     private lateinit var runButton: Button
     private lateinit var copyButton: Button
+    private lateinit var settingsButton: ImageButton
     private lateinit var outputView: TextView
     private lateinit var scrollView: ScrollView
     private lateinit var progressBar: ProgressBar
@@ -31,13 +34,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        queryInput  = findViewById(R.id.queryInput)
-        runButton   = findViewById(R.id.runButton)
-        copyButton  = findViewById(R.id.copyButton)
-        outputView  = findViewById(R.id.outputView)
-        scrollView  = findViewById(R.id.scrollView)
-        progressBar = findViewById(R.id.progressBar)
-        statusLabel = findViewById(R.id.statusLabel)
+        queryInput     = findViewById(R.id.queryInput)
+        runButton      = findViewById(R.id.runButton)
+        copyButton     = findViewById(R.id.copyButton)
+        settingsButton = findViewById(R.id.settingsButton)
+        outputView     = findViewById(R.id.outputView)
+        scrollView     = findViewById(R.id.scrollView)
+        progressBar    = findViewById(R.id.progressBar)
+        statusLabel    = findViewById(R.id.statusLabel)
 
         progressBar.visibility = View.GONE
         copyButton.visibility  = View.GONE
@@ -48,6 +52,7 @@ class MainActivity : AppCompatActivity() {
 
         runButton.setOnClickListener { startInvestigation() }
         copyButton.setOnClickListener { copyToClipboard() }
+        settingsButton.setOnClickListener { showSettingsDialog() }
 
         queryInput.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -55,6 +60,55 @@ class MainActivity : AppCompatActivity() {
                 true
             } else false
         }
+    }
+
+    /**
+     * Module 4 (reverse infrastructure mapping) can use a GitHub personal
+     * access token and a HaveIBeenPwned API key to raise its GitHub rate
+     * limit and enable breach lookups. Both are optional - the module
+     * degrades gracefully without them. Stored locally in the app's
+     * private SharedPreferences, never sent anywhere except as the
+     * Authorization header on the respective API's own request.
+     */
+    private fun showSettingsDialog() {
+        val prefs = getSharedPreferences("ctf_settings", Context.MODE_PRIVATE)
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 32, 48, 0)
+        }
+
+        val githubLabel = TextView(this).apply { text = "GitHub personal access token (optional)" }
+        val githubInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(prefs.getString("github_token", ""))
+        }
+        val hibpLabel = TextView(this).apply {
+            text = "HaveIBeenPwned API key (optional)"
+            setPadding(0, 32, 0, 0)
+        }
+        val hibpInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setText(prefs.getString("hibp_key", ""))
+        }
+
+        container.addView(githubLabel)
+        container.addView(githubInput)
+        container.addView(hibpLabel)
+        container.addView(hibpInput)
+
+        AlertDialog.Builder(this)
+            .setTitle("Module 4 API Keys")
+            .setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit()
+                    .putString("github_token", githubInput.text.toString().trim().ifEmpty { null })
+                    .putString("hibp_key", hibpInput.text.toString().trim().ifEmpty { null })
+                    .apply()
+                Toast.makeText(this, "Saved", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun startInvestigation() {
@@ -86,7 +140,19 @@ class MainActivity : AppCompatActivity() {
         return try {
             val py     = Python.getInstance()
             val bridge = py.getModule("ctf_bridge")
-            bridge.callAttr("run_investigation", query).toString()
+            // filesDir is the app's private, writable storage - Chaquopy's
+            // process cwd is not writable, so the evidence journal needs an
+            // explicit path or every investigation fails before it starts.
+            val prefs = getSharedPreferences("ctf_settings", Context.MODE_PRIVATE)
+            val githubToken = prefs.getString("github_token", null)
+            val hibpKey = prefs.getString("hibp_key", null)
+            bridge.callAttr(
+                "run_investigation",
+                query,
+                filesDir.absolutePath,
+                githubToken,
+                hibpKey
+            ).toString()
         } catch (e: Exception) {
             """{"error": "${e.message}", "error_type": "${e.javaClass.simpleName}"}"""
         }
@@ -119,6 +185,19 @@ class MainActivity : AppCompatActivity() {
                     sb.appendLine("\n── STRUCTURED RESULTS ──────────────────")
                     sb.appendLine(results.toString(2))
                 }
+
+                // Report engine output (law enforcement handoff + court report)
+                val leReport = j.optString("le_report", "").trim()
+                if (leReport.isNotEmpty()) {
+                    sb.appendLine("\n── LAW ENFORCEMENT HANDOFF ─────────────")
+                    sb.appendLine(leReport)
+                }
+                val courtReport = j.optString("court_report", "").trim()
+                if (courtReport.isNotEmpty()) {
+                    sb.appendLine("\n── COURT-ADMISSIBLE REPORT ─────────────")
+                    sb.appendLine(courtReport)
+                }
+
                 statusLabel.text = "Complete"
             }
         } catch (_: JSONException) {

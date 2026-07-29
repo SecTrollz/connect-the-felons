@@ -368,9 +368,15 @@ class ReportEngine:
     no report content here is invented separately from logged evidence.
     """
 
-    def __init__(self, journal):
+    def __init__(self, journal, output_dir=None):
+        """
+        output_dir: writable directory to save generated reports/letters
+        to. Defaults to the cwd-relative "investigations/reports" (fine
+        on Termux/desktop - not writable under Chaquopy on Android, so
+        ctf_bridge.py passes an app-storage path here instead).
+        """
         self.journal = journal
-        self.output_dir = Path("investigations/reports")
+        self.output_dir = Path(output_dir) if output_dir else Path("investigations/reports")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def le_handoff(self, findings_summary=None, save=True):
