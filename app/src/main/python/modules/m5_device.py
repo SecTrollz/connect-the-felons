@@ -498,7 +498,7 @@ def sms_loopback_test(phone_number):
             "Contact carrier and request HLR (Home Location Register) lookup",
             "File FCC complaint: consumercomplaints.fcc.gov",
             "Request CPNI (Customer Proprietary Network Information) disclosure",
-            "Generate carrier demand letter via Module 9 Report Engine",
+            "Generate carrier demand letter via the Report Engine",
         ],
         "legal_note": (
             "This test is legal when run on your own number. "

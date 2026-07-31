@@ -9,6 +9,8 @@ Usage:
   python main.py --resume <investigation_id>
   python main.py --verify <investigation_id>
   python main.py --adb                     # Analyze own connected device
+  python main.py --rf-scan [--sdr]         # Passive RF surveillance sweep
+  python main.py --persistence-scan        # Own-device stalkerware/RAT audit
 
 Examples:
   python main.py ssiloc.com
@@ -17,6 +19,8 @@ Examples:
   python main.py 356938035643809
   python main.py 8901260123456789013
   python main.py --adb
+  python main.py --rf-scan
+  python main.py --persistence-scan
 """
 
 import sys
@@ -40,6 +44,7 @@ from modules.m5_device import DeviceIdentityForensics
 from modules.m6_graph import AssociationGraph
 from modules.m7_reconciliation import Reconciliation
 from modules.m8_attribution import AttributionEngine
+from modules.m9_rf_persistence import RFPersistenceForensics
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -89,6 +94,7 @@ class Investigation:
         )
         self.reconciliation = Reconciliation(journal=self.journal)
         self.attribution     = AttributionEngine(journal=self.journal)
+        self.rf_persistence  = RFPersistenceForensics(journal=self.journal)
         try:
             self.graph = AssociationGraph(journal=self.journal)
         except ImportError:
@@ -188,6 +194,30 @@ class Investigation:
         if result.get("mac_wifi"):
             print(f"\n[CTF] WiFi MAC found, running OUI lookup...")
             self._run_mac(result["mac_wifi"])
+
+        self._print_summary()
+        return self.results
+
+    def run_rf_scan(self, sdr=False, sdr_range_mhz=(300, 928)):
+        """Passive RF surveillance sweep: Wi-Fi, cellular, magnetic, optional SDR."""
+        print(f"\n{'═' * 60}")
+        print("RF Surveillance Sweep")
+        print(f"{'═' * 60}")
+
+        result = self.rf_persistence.scan_rf(sdr=sdr, sdr_range_mhz=sdr_range_mhz)
+        self.results["rf_scan"] = result
+
+        self._print_summary()
+        return self.results
+
+    def run_persistence_scan(self):
+        """Own-device stalkerware/RAT persistence audit."""
+        print(f"\n{'═' * 60}")
+        print("Persistence Forensics - Own Device")
+        print(f"{'═' * 60}")
+
+        result = self.rf_persistence.scan_persistence()
+        self.results["persistence_scan"] = result
 
         self._print_summary()
         return self.results
@@ -505,6 +535,19 @@ class Investigation:
                 for ind in mdm:
                     flags.append(f"MDM: {ind}")
 
+                # RF surveillance flags
+                for rf_flag in result.get("flags", []) if key == "rf_scan" else []:
+                    flags.append(f"RF: {rf_flag.get('type')} - {rf_flag.get('reason')}")
+
+                # Persistence / stalkerware flags
+                if key == "persistence_scan":
+                    for match in result.get("stalkerware", {}).get("matches", []):
+                        flags.append(f"STALKERWARE SIGNATURE MATCH: {match.get('package')} ({match.get('name', 'unknown')})")
+                    for scored in result.get("risk_scored", []):
+                        if scored["level"] in ("HIGH", "CRITICAL"):
+                            flags.append(f"PERSISTENCE RISK [{scored['level']}]: {scored['package']} "
+                                         f"(score={scored['score']}, {', '.join(scored['signals'])})")
+
         return flags
 
     def _collect_findings(self):
@@ -560,6 +603,12 @@ def main():
                         help="Target(s) to investigate (domain, IP, email, IMEI, etc.)")
     parser.add_argument("--adb", action="store_true",
                         help="Analyze own connected Android device via ADB")
+    parser.add_argument("--rf-scan", action="store_true",
+                        help="Passive RF surveillance sweep (Wi-Fi, cellular, magnetic)")
+    parser.add_argument("--sdr", action="store_true",
+                        help="With --rf-scan: also run a USB RTL-SDR wideband spectrum sweep")
+    parser.add_argument("--persistence-scan", action="store_true",
+                        help="Audit own device for stalkerware/RAT persistence indicators")
     parser.add_argument("--resume", metavar="ID",
                         help="Resume existing investigation by ID")
     parser.add_argument("--verify", metavar="ID",
@@ -607,6 +656,16 @@ def main():
     # Run ADB analysis
     if args.adb:
         inv.run_adb()
+        return
+
+    # RF surveillance sweep
+    if args.rf_scan:
+        inv.run_rf_scan(sdr=args.sdr)
+        return
+
+    # Persistence / stalkerware audit
+    if args.persistence_scan:
+        inv.run_persistence_scan()
         return
 
     # Require at least one target

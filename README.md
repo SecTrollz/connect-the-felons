@@ -5,10 +5,20 @@
 
 ## What this is
 
-A self-contained Android app wrapping all 9 CTF investigation modules
-(M0–M8) plus the evidence journal and report engine into a home-screen
+A self-contained Android app wrapping all 10 CTF investigation modules
+(M0–M9) plus the evidence journal and report engine into a home-screen
 app. Type a domain, email, IP, IMEI, ICCID, phone number, or company
 name — tap RUN — get a SHA-256 evidence-chained forensic report.
+
+Module 9 adds RF surveillance detection (passive Wi-Fi/cellular/
+magnetic sweep for nearby bugs, rogue APs, and IMSI-catchers) and
+persistence forensics (own-device audit for stalkerware/RAT footholds
+like abused Accessibility Service grants, hidden launcher icons, and
+boot-persistence receivers). See "RF & persistence detection" below —
+both run from the Termux CLI (`python main.py --rf-scan` /
+`--persistence-scan`), the same way Module 5's `--adb` device analysis
+does, since they depend on binaries (termux-api, adb, rtl_power) that
+only exist in a Termux shell, not inside the packaged app's sandbox.
 
 **No rewrite of the Python code happened here.** The same modules that
 passed self-tests in the build environment are copied unchanged into
@@ -60,6 +70,50 @@ echo "android.aapt2FromMavenOverride=$(which aapt2)" >> gradle.properties
 
 ---
 
+## RF & persistence detection (Module 9)
+
+Two audits, both CLI-only (run in Termux directly, not from the
+packaged app - see "Known risks" above for why):
+
+```bash
+# Passive RF surveillance sweep: Wi-Fi evil-twin/rogue-AP heuristics,
+# cellular IMSI-catcher heuristics, a magnetometer bug/camera sweep aid
+pkg install termux-api          # + install the Termux:API companion app
+python app/src/main/python/main.py --rf-scan
+
+# Add a real wideband spectrum sweep if you have a USB-OTG RTL-SDR dongle
+pkg install rtl-sdr
+python app/src/main/python/main.py --rf-scan --sdr
+
+# Own-device stalkerware/RAT persistence audit: accessibility service
+# abuse, device admin, boot receivers, overlay grants, sideloaded apps
+# hidden from the launcher, known stalkerware signatures
+python app/src/main/python/main.py --persistence-scan   # needs `adb` + USB debugging
+```
+
+**Wi-Fi/cellular/magnetic scans** need the Termux:API companion app
+(F-Droid or Play Store) plus `pkg install termux-api`, and location/
+phone permissions granted to Termux. **The persistence scan** needs
+`adb` connected to the device over USB debugging - same convention as
+Module 5's `--adb` device analysis, since package-level introspection
+(`pm`, `dumpsys`, `appops`) needs shell-level access that a sandboxed
+app process doesn't have.
+
+**Stalkerware signature matching** ships with no local database by
+design - same as Module 5's OUI/TAC lookups. Populate
+`app/src/main/python/data/stalkerware/signatures.json` yourself from a
+vetted, actively-maintained IOC feed (Amnesty International's Mobile
+Verification Toolkit, the Coalition Against Stalkerware) rather than
+trusting a hardcoded list that goes stale - see the docstring on
+`load_stalkerware_db()` in `modules/m9_rf_persistence.py` for the
+schema.
+
+Everything found is logged to the same SHA-256 evidence chain as every
+other module and rolls into the flags/findings in the investigation
+summary and reports.
+
+---
+
 ## Project structure
 
 ```
@@ -89,7 +143,10 @@ ctf-android/
 │       │       ├── m5_device.py
 │       │       ├── m6_graph.py
 │       │       ├── m7_reconciliation.py
-│       │       └── m8_attribution.py
+│       │       ├── m8_attribution.py
+│       │       └── m9_rf_persistence.py
+│       ├── data/
+│       │   └── stalkerware/              ← put signatures.json here (gitignored, user-supplied)
 │       └── res/
 │           ├── layout/activity_main.xml
 │           ├── values/{strings,themes}.xml

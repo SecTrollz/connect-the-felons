@@ -55,7 +55,7 @@ def run_investigation(target: str, storage_dir: str = None,
         inv = Investigation(base_dir=base_dir, github_token=github_token, hibp_key=hibp_key)
         results = inv.run([target])
 
-        # Module 9 (report engine): turn what was just found into the
+        # Report Engine: turn what was just found into the
         # law-enforcement handoff and court-admissible report. Both are
         # generated every run rather than gated behind a separate call -
         # simplest way to make them reachable from the one RUN button.
@@ -82,3 +82,13 @@ def run_investigation(target: str, storage_dir: str = None,
         }, indent=2)
     finally:
         sys.stdout = original_stdout
+
+
+# Module 9's RF sweep and persistence audit depend on termux-api binaries
+# (termux-wifi-scaninfo, termux-telephony-cellinfo, termux-sensor),
+# optionally rtl_power, and/or `adb`/`pm`/`dumpsys` shell access - none of
+# which exist inside the packaged app's Chaquopy sandbox. Same reason
+# Module 5's ADB device analysis was never wired into this bridge: they
+# only do anything useful run directly under Termux, so they stay CLI-only
+# (`python main.py --rf-scan` / `--persistence-scan`), not app buttons that
+# would just report "unavailable" every time.
